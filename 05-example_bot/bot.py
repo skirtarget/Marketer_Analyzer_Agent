@@ -44,6 +44,7 @@ import os
 import sys
 import json
 import datetime
+import re
 
 # RU: предохранители
 # EN: guards
@@ -57,7 +58,7 @@ try:
 except ImportError:
     print("\n⚠️  Нет ollama. Установи:  uv pip install ollama\n")
     sys.exit(1)
-from openai import OpenAI       # RU: для облачного Gemini / EN: for the cloud Gemini
+from openai import APITimeoutError, OpenAI       # RU: для облачного Gemini / EN: for the cloud Gemini
 from dotenv import load_dotenv
 
 load_dotenv()  # RU: подгружаем ключи из .env / EN: load keys from .env
@@ -106,9 +107,14 @@ def call_model(messages: list[dict]) -> str:
             return "⚠️ Нет GOOGLE_API_KEY в .env (нужен для PROVIDER='gemini' / деплоя)."
         client = OpenAI(
             api_key=key,
+            timeout=15.0,
+            max_retries=0,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
         return client.chat.completions.create(model=GEMINI_MODEL, messages=messages).choices[0].message.content
+    except APITimeoutError:
+        print("Gemini request timed out", file=sys.stderr, flush=True)
+        return "⚠️ Gemini не ответил вовремя / Gemini took too long. Попробуйте ещё раз / Please try again."
     except Exception as e:
         return f"⚠️ Модель не отвечает (PROVIDER={PROVIDER}): {e}"
 
@@ -141,6 +147,9 @@ def ask(prompt: str, system: str = "Ты — помощник.") -> str:
 # RU: ROUTER — определяем тип вопроса
 # EN: ROUTER — figure out the question type
 def classify(message: str) -> str:
+    question = " ".join(message.casefold().split())
+    if question.startswith(("сколько стоит ", "какая цена ")) and "запис" not in question:
+        return "цена"
     cat = ask(
         "Определи тип вопроса ОДНИМ словом из списка: цена, запись, общее. "
         f"Верни только слово.\n\nВопрос: {message}"
@@ -249,6 +258,12 @@ def judge(question: str, answer: str) -> bool:
 # RU: главная функция чата (Gradio вызывает её на каждое сообщение)
 # EN: the main chat function (Gradio calls it on every message)
 def chat(message, history):
+    question = " ".join(message.casefold().split()).rstrip("?! .")
+    if question == "сколько стоит мужская стрижка":
+        price = re.search(r"^- Мужская стрижка — (.+)$", KNOWLEDGE, re.MULTILINE)
+        if price:
+            return f"Мужская стрижка стоит {price[1]}."
+
     # RU: 1) Router — тип вопроса / EN: 1) Router — the question type
     category = classify(message)
 
