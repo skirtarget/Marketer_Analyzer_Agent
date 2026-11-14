@@ -58,7 +58,7 @@ try:
 except ImportError:
     print("\n⚠️  Нет ollama. Установи:  uv pip install ollama\n")
     sys.exit(1)
-from openai import APITimeoutError, OpenAI       # RU: для облачного Gemini / EN: for the cloud Gemini
+from openai import APIStatusError, APITimeoutError, OpenAI       # RU: для облачного Gemini / EN: for the cloud Gemini
 from dotenv import load_dotenv
 
 load_dotenv()  # RU: подгружаем ключи из .env / EN: load keys from .env
@@ -115,8 +115,14 @@ def call_model(messages: list[dict]) -> str:
     except APITimeoutError:
         print("Gemini request timed out", file=sys.stderr, flush=True)
         return "⚠️ Gemini не ответил вовремя / Gemini took too long. Попробуйте ещё раз / Please try again."
-    except Exception as e:
-        return f"⚠️ Модель не отвечает (PROVIDER={PROVIDER}): {e}"
+    except APIStatusError as exc:
+        print(f"Gemini request failed: HTTP {exc.status_code}", file=sys.stderr, flush=True)
+        if exc.status_code == 503:
+            return "Gemini сейчас перегружен. Попробуйте чуть позже. / Gemini is busy. Please try again shortly."
+        return "Не удалось получить ответ Gemini. / Could not get a response from Gemini."
+    except Exception as exc:
+        print(f"Model request failed: {type(exc).__name__}", file=sys.stderr, flush=True)
+        return "Не удалось получить ответ модели. / Could not get a response from the model."
 
 
 def to_plain_text(content) -> str:
@@ -257,12 +263,37 @@ def judge(question: str, answer: str) -> bool:
 
 # RU: главная функция чата (Gradio вызывает её на каждое сообщение)
 # EN: the main chat function (Gradio calls it on every message)
-def chat(message, history):
+def price_answer(message: str) -> str | None:
     question = " ".join(message.casefold().split()).rstrip("?! .")
-    if question == "сколько стоит мужская стрижка":
-        price = re.search(r"^- Мужская стрижка — (.+)$", KNOWLEDGE, re.MULTILINE)
-        if price:
-            return f"Мужская стрижка стоит {price[1]}."
+    match = re.fullmatch(
+        r"(?:сколько стоит |какая цена |цена |стоимость )?"
+        r"(стрижка|стрижки|мужская стрижка|мужской стрижки|"
+        r"детская стрижка|детской стрижки|стрижка машинкой|стрижки машинкой|"
+        r"стрижка \+ борода|моделирование бороды|бритьё опасной бритвой|прайс|цены)",
+        question,
+    )
+    if not match:
+        return None
+
+    service = match[1]
+    aliases = {
+        "мужской стрижки": "мужская стрижка",
+        "детской стрижки": "детская стрижка",
+        "стрижки машинкой": "стрижка машинкой",
+    }
+    service = aliases.get(service, service)
+    prices = re.findall(r"^- ([^\n]+ — [\d ]+ ₽)$", KNOWLEDGE, re.MULTILINE)
+    if service in {"стрижка", "стрижки"}:
+        prices = [row for row in prices if "стрижка" in row.casefold()]
+    elif service not in {"прайс", "цены"}:
+        prices = [row for row in prices if row.casefold().split(" — ", 1)[0].split(" (", 1)[0] == service]
+    return "\n".join(f"- {row}" for row in prices) if prices else None
+
+
+def chat(message, history):
+    price = price_answer(message)
+    if price:
+        return price
 
     # RU: 1) Router — тип вопроса / EN: 1) Router — the question type
     category = classify(message)
